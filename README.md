@@ -2,7 +2,7 @@
 
 - Terraform module for deploying essential EKS addons using official Helm releases and AWS EKS addons. All addons are mandatory and deployed together. Please note that this module needs to be run after the eks-infra has been deployed.
 
-- Please check the [oc-terraform-module-eks-setup](https://github.com/orbitcluster/oc-terraform-module-eks-setup) for more details. You will see that, in this repository, we are calling this module after the eks-infra has been deployed.
+- Please check the [orchestrator-plane-setup](https://github.com/urukube/orchestrator-plane-setup) for more details. You will see that, in this repository, we are calling this module after the eks-infra has been deployed.
 
 ## Addons Included
 
@@ -20,15 +20,15 @@
 
 - Existing EKS cluster with OIDC provider enabled
 - Terraform >= 1.5.0
-- AWS Provider >= 6.15.0
-- Helm Provider >= 2.17.0
+- AWS Provider >= 6.42.0
+- Helm Provider >= 2.16.0
 - Kubernetes Provider >= 2.35.0
 
 ## Usage
 
 ```hcl
 module "essential_addons" {
-  source = "git::https://github.com/orbitcluster/oc-terraform-module-essential-addons.git?ref=main"
+  source = "git::https://github.com/urukube/terraform-module-essential-addons.git?ref=v1.0.0"
 
   # Cluster connection
   cluster_name                       = module.eks.cluster_name
@@ -39,7 +39,6 @@ module "essential_addons" {
 
   # Networking
   vpc_id = module.networking.vpc_id
-  region = "us-east-1"
 
   # Optional: Version overrides
   # cluster_autoscaler_version = "9.43.2"
@@ -92,7 +91,6 @@ provider "kubernetes" {
 | cluster_oidc_provider_arn          | ARN of the OIDC provider for IRSA          | `string`      | n/a     |   yes    |
 | cluster_oidc_issuer_url            | URL of the OIDC issuer                     | `string`      | n/a     |   yes    |
 | vpc_id                             | VPC ID where the EKS cluster is deployed   | `string`      | n/a     |   yes    |
-| region                             | AWS region                                 | `string`      | n/a     |   yes    |
 | tags                               | Tags to apply to all resources             | `map(string)` | `{}`    |    no    |
 | iam_role_permissions_boundary      | ARN of permissions boundary for IAM roles  | `string`      | `null`  |    no    |
 
