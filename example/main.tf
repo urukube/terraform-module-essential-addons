@@ -19,7 +19,6 @@ module "essential_addons" {
 
   # Networking
   vpc_id = "<vpc-id>" # Replace with VPC ID
-  region = "us-east-1"
 
   # Optional Networking
   cluster_service_ipv4_cidr = "172.20.0.0/16" # Default if not specified

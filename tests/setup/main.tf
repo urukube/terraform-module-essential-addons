@@ -25,10 +25,6 @@ output "vpc_id" {
   value = "vpc-0123456789abcdef0"
 }
 
-output "region" {
-  value = "us-east-1"
-}
-
 output "bu_id" {
   value = "example-bu"
 }
