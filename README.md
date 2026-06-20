@@ -128,7 +128,7 @@ Apache 2.0 License
 | Name | Version |
 |------|---------|
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.5.0 |
-| <a name="requirement_aws"></a> [aws](#requirement\_aws) | >= 6.15.0, <= 6.31.0 |
+| <a name="requirement_aws"></a> [aws](#requirement\_aws) | >= 6.42.0 |
 | <a name="requirement_helm"></a> [helm](#requirement\_helm) | >= 2.16.0 |
 | <a name="requirement_kubernetes"></a> [kubernetes](#requirement\_kubernetes) | >= 2.35.0 |
 
@@ -136,7 +136,7 @@ Apache 2.0 License
 
 | Name | Version |
 |------|---------|
-| <a name="provider_aws"></a> [aws](#provider\_aws) | >= 6.15.0, <= 6.31.0 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | >= 6.42.0 |
 | <a name="provider_helm"></a> [helm](#provider\_helm) | >= 2.16.0 |
 
 ## Modules
