@@ -28,7 +28,7 @@ resource "helm_release" "vpc_cni" {
 
   values = [
     templatefile("${path.module}/yamls/vpc-cni-values.yaml", {
-      region   = data.aws_region.current.name
+      region   = data.aws_region.current.region
       role_arn = aws_iam_role.vpc_cni_role.arn
     })
   ]
