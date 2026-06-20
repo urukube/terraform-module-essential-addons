@@ -1,0 +1,316 @@
+# =============================================================================
+# AWS Load Balancer Controller Helm Chart Values
+# Chart: https://github.com/aws/eks-charts/tree/master/stable/aws-load-balancer-controller
+# =============================================================================
+# Legend:
+#   [CUSTOM]  - Values modified from chart defaults for this module
+#   [DEFAULT] - Chart default values (included for reference)
+#   $${var}    - Terraform templatefile variables
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Image Configuration [DEFAULT]
+# Purpose: Defines the container image for the AWS Load Balancer Controller.
+# Importance: Uses AWS's official ECR public image, ensuring compatibility
+#             with AWS APIs and timely security updates.
+# -----------------------------------------------------------------------------
+image:
+  repository: public.ecr.aws/eks/aws-load-balancer-controller # [DEFAULT]
+  # tag: ""                                                   # [DEFAULT] Uses appVersion
+  pullPolicy: IfNotPresent # [DEFAULT]
+
+imagePullSecrets: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Naming Overrides [DEFAULT]
+# Purpose: Allows customization of Kubernetes resource names.
+# Importance: Useful for multi-tenant clusters or naming conflict resolution.
+# -----------------------------------------------------------------------------
+nameOverride: "" # [DEFAULT]
+fullnameOverride: "" # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Cluster Configuration
+# Purpose: Identifies the EKS cluster and AWS environment for the controller.
+# Importance: CRITICAL - These values are essential for the controller to:
+#   - clusterName: Tag ALBs/NLBs with cluster ownership for proper management
+#   - region: Determine which AWS region to create resources in
+#   - vpcId: Create target groups and security groups in the correct VPC
+# Without these, the controller cannot provision or manage load balancers.
+# -----------------------------------------------------------------------------
+clusterName: ${cluster_name} # [CUSTOM] Required
+region: ${region} # [CUSTOM] Required
+vpcId: ${vpc_id} # [CUSTOM] Required
+
+# -----------------------------------------------------------------------------
+# Deployment Configuration
+# Purpose: Controls the number of controller replicas and update behavior.
+# Importance:
+#   - replicaCount: 2 replicas provide high availability. If one pod fails,
+#     the other continues processing Ingress/Service changes.
+#   - RollingUpdate: Ensures zero-downtime during upgrades by maintaining
+#     at least one healthy replica during the update process.
+# -----------------------------------------------------------------------------
+replicaCount: 2 # [CUSTOM] HA mode (default is 2)
+
+updateStrategy:
+  type: RollingUpdate # [DEFAULT]
+  rollingUpdate:
+    maxSurge: 1 # [DEFAULT]
+    maxUnavailable: 1 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Service Account Configuration
+# Purpose: Creates and configures the Kubernetes Service Account for IRSA.
+# Importance: CRITICAL for AWS API access:
+#   - create: true - Creates a dedicated service account
+#   - name: Explicit naming for easy identification
+#   - eks.amazonaws.com/role-arn: IRSA annotation that links the K8s service
+#     account to an IAM role, allowing the controller to:
+#     * Create/modify/delete ALBs and NLBs
+#     * Manage target groups and listener rules
+#     * Create security groups for load balancers
+#     * Read EC2 instance and subnet information
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true # [CUSTOM]
+  name: aws-load-balancer-controller # [CUSTOM]
+  annotations:
+    eks.amazonaws.com/role-arn: ${role_arn} # [CUSTOM] IRSA annotation
+  automountServiceAccountToken: true # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# RBAC Configuration [DEFAULT]
+# Purpose: Creates ClusterRole and ClusterRoleBinding for K8s API access.
+# Importance: The controller needs cluster-wide permissions to:
+#   - Watch Ingress and Service resources across all namespaces
+#   - Read Node and Pod information for target registration
+#   - Manage IngressClass resources
+# -----------------------------------------------------------------------------
+rbac:
+  create: true # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Configuration [DEFAULT]
+# Purpose: Defines metadata and security settings for controller pods.
+# Importance: Security best practices:
+#   - fsGroup: Sets file permissions for mounted volumes
+#   - allowPrivilegeEscalation: false - Prevents container privilege escalation
+#   - readOnlyRootFilesystem: true - Immutable container filesystem
+#   - runAsNonRoot: true - Ensures container runs as non-root user
+# -----------------------------------------------------------------------------
+podLabels: {} # [DEFAULT]
+podAnnotations: {} # [DEFAULT]
+
+podSecurityContext:
+  fsGroup: 65534 # [DEFAULT]
+
+securityContext:
+  allowPrivilegeEscalation: false # [DEFAULT]
+  readOnlyRootFilesystem: true # [DEFAULT]
+  runAsNonRoot: true # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Priority Class [DEFAULT]
+# Purpose: Ensures controller pods are scheduled with high priority.
+# Importance: CRITICAL - system-cluster-critical priority ensures:
+#   - Controller survives resource pressure and node evictions
+#   - Load balancer management continues even during cluster stress
+#   - New Ingress resources are processed without delay
+# -----------------------------------------------------------------------------
+priorityClassName: system-cluster-critical # [DEFAULT]
+
+terminationGracePeriodSeconds: 10 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Resource Limits [DEFAULT]
+# Purpose: Defines CPU and memory resources for the controller.
+# Importance: Proper sizing ensures:
+#   - requests: Guaranteed minimum for stable operation
+#   - limits: Prevents runaway resource consumption
+#   - Limits > requests: Allows bursting during heavy reconciliation
+# Note: For large clusters (many Ingresses), consider increasing limits.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m # [DEFAULT]
+    memory: 128Mi # [DEFAULT]
+  limits:
+    cpu: 200m # [DEFAULT]
+    memory: 256Mi # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Node Scheduling [DEFAULT]
+# Purpose: Controls where controller pods can be scheduled.
+# Importance:
+#   - configureDefaultAffinity: true - Automatically configures pod anti-affinity
+#     to spread replicas across different nodes, improving HA.
+#   - In production, consider using nodeSelector to place controllers on
+#     dedicated system node pools.
+# -----------------------------------------------------------------------------
+nodeSelector: {} # [DEFAULT]
+tolerations: [] # [DEFAULT]
+configureDefaultAffinity: true # [DEFAULT] Enables pod anti-affinity
+
+affinity: {} # [DEFAULT] Custom affinity (overrides default)
+
+topologySpreadConstraints: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Probes Configuration [DEFAULT]
+# Purpose: Configures health checks for the controller container.
+# Importance: Ensures reliable operation:
+#   - livenessProbe: Kubernetes restarts the pod if /healthz fails
+#   - initialDelaySeconds: 30 - Allows time for controller initialization
+#   - Port 61779 is the controller's health check port
+# -----------------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /healthz # [DEFAULT]
+    port: 61779 # [DEFAULT]
+    scheme: HTTP # [DEFAULT]
+  initialDelaySeconds: 30 # [DEFAULT]
+  timeoutSeconds: 10 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Controller Configuration [DEFAULT]
+# Purpose: Enables AWS security features for load balancers.
+# Importance:
+#   - enableShield: Enables AWS Shield Standard protection (DDoS mitigation)
+#   - enableWaf/enableWafv2: Allows associating AWS WAF with ALBs for
+#     web application firewall protection against common attacks
+# Note: WAF association requires additional configuration via annotations.
+# -----------------------------------------------------------------------------
+enableShield: true # [DEFAULT]
+enableWaf: true # [DEFAULT]
+enableWafv2: true # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Default Target Type [DEFAULT]
+# Purpose: Sets the default target type for Ingress and Service resources.
+# Importance:
+#   - 'ip': Pods are registered directly by IP (requires VPC CNI)
+#     * Faster target registration
+#     * Works with Fargate
+#     * Required for network policies on targets
+#   - 'instance': EC2 instances are registered, traffic goes through NodePort
+#     * Works with any CNI
+#     * Higher latency due to extra hop
+# Can be overridden per-resource with annotations.
+# -----------------------------------------------------------------------------
+defaultTargetType: ip # [DEFAULT] 'ip' or 'instance'
+
+# -----------------------------------------------------------------------------
+# Default SSL Policy [DEFAULT]
+# Purpose: Sets the default SSL/TLS policy for HTTPS listeners.
+# Importance: Controls the cipher suites and protocols for TLS termination.
+#   - ELBSecurityPolicy-2016-08: Broad compatibility, older clients supported
+#   - Consider ELBSecurityPolicy-TLS13-1-2-2021-06 for stricter security
+# Can be overridden per-Ingress with annotations.
+# -----------------------------------------------------------------------------
+defaultSSLPolicy: ELBSecurityPolicy-2016-08 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Webhook Configuration [DEFAULT]
+# Purpose: Configures the mutating/validating admission webhooks.
+# Importance:
+#   - enableServiceMutatorWebhook: Allows automatic mutation of Service
+#     resources (e.g., adding finalizers, default values)
+#   - webhookBindPort: Port for the webhook server (9443)
+#   - webhookTLS: TLS certificates for secure webhook communication
+#     (auto-generated by cert-manager or controller if not provided)
+# -----------------------------------------------------------------------------
+enableServiceMutatorWebhook: true # [DEFAULT]
+serviceMutatorWebhookConfig: {} # [DEFAULT]
+
+webhookBindPort: 9443 # [DEFAULT]
+
+# TLS certificates for webhook
+webhookTLS:
+  caCert: "" # [DEFAULT]
+  cert: "" # [DEFAULT]
+  key: "" # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Ingress Class Configuration [DEFAULT]
+# Purpose: Creates the IngressClass resource for ALB Ingress.
+# Importance:
+#   - createIngressClassResource: Creates the 'alb' IngressClass
+#   - ingressClass: Name of the class (referenced in Ingress spec.ingressClassName)
+#   - ingressClassParams: Allows defining cluster-wide defaults via IngressClassParams CRD
+# Usage: Set spec.ingressClassName: alb in your Ingress resources.
+# -----------------------------------------------------------------------------
+createIngressClassResource: true # [DEFAULT]
+ingressClass: alb # [DEFAULT]
+ingressClassParams:
+  create: true # [DEFAULT]
+  name: alb # [DEFAULT]
+  spec: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Service Configuration [DEFAULT]
+# Purpose: Creates a Kubernetes Service for the controller.
+# Importance: Enables:
+#   - Webhook traffic routing (port 443 -> 9443)
+#   - Prometheus/monitoring access to controller metrics
+# -----------------------------------------------------------------------------
+service:
+  port: 443 # [DEFAULT]
+  targetPort: 9443 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Additional Arguments [DEFAULT]
+# Purpose: Pass extra CLI arguments to the controller.
+# Importance: Useful for:
+#   - Debugging: --log-level=debug
+#   - Feature flags: --feature-gates=...
+#   - Custom configurations not exposed via values
+# -----------------------------------------------------------------------------
+extraArgs: {} # [DEFAULT]
+
+# Example extra args:
+# extraArgs:
+#   aws-vpc-id: vpc-xxxxxxxx
+#   aws-region: us-west-2
+#   ingress-class: alb
+
+# -----------------------------------------------------------------------------
+# Additional Configuration [DEFAULT]
+# Purpose: Injection points for custom environment variables and volumes.
+# Importance: Useful for:
+#   - extraEnv: Custom environment variables (e.g., AWS_STS_REGIONAL_ENDPOINTS)
+#   - extraVolumes/Mounts: Mounting additional certificates or configs
+# -----------------------------------------------------------------------------
+extraEnv: [] # [DEFAULT]
+extraVolumes: [] # [DEFAULT]
+extraVolumeMounts: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Metrics/Monitoring [DEFAULT]
+# Purpose: Integrates with Prometheus for metrics collection.
+# Importance: When enabled:
+#   - serviceMonitor: Auto-configures Prometheus to scrape controller metrics
+#     (aws_alb_controller_*, reconcile_*, etc.)
+#   - Essential for monitoring ALB/NLB provisioning performance
+# Note: Requires Prometheus Operator to be installed in the cluster.
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false # [DEFAULT]
+  namespace: "" # [DEFAULT]
+  interval: 60s # [DEFAULT]
+  scrapeTimeout: 30s # [DEFAULT]
+  additionalLabels: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Disruption Budget [DEFAULT]
+# Purpose: Limits voluntary disruptions during cluster maintenance.
+# Importance: For production HA:
+#   - enabled: true - Prevents Kubernetes from evicting too many pods at once
+#   - minAvailable: 1 - Ensures at least one controller is always running
+#   - Protects against losing all controllers during node drains/upgrades
+# Recommendation: Enable for production clusters with replicaCount >= 2.
+# -----------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: false # [DEFAULT]
+  minAvailable: 1 # [DEFAULT]
+  # maxUnavailable: 1 # [DEFAULT]

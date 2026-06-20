@@ -1,0 +1,308 @@
+# =============================================================================
+# AWS VPC CNI Helm Chart Values
+# Chart: https://github.com/aws/amazon-vpc-cni-k8s/tree/master/charts/aws-vpc-cni
+# =============================================================================
+# Legend:
+#   [CUSTOM]  - Values modified from chart defaults for this module
+#   [DEFAULT] - Chart default values (included for reference)
+#   $${var}    - Terraform templatefile variables
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Image Configuration
+# Purpose: Defines the container images for VPC CNI and its init container.
+# Importance:
+#   - region: Must match your EKS cluster region for optimal ECR access
+#   - account: 602401143452 is AWS's official EKS ECR account that hosts
+#     the VPC CNI images. This is consistent across all AWS regions.
+#   - init container: Sets up networking prerequisites before main container
+# -----------------------------------------------------------------------------
+init:
+  image:
+    region: "${region}" # [CUSTOM] Match cluster region
+    account: "602401143452" # [DEFAULT] AWS EKS ECR account
+    # tag: ""
+    pullPolicy: IfNotPresent # [DEFAULT]
+
+image:
+  region: "${region}" # [CUSTOM] Match cluster region
+  account: "602401143452" # [DEFAULT] AWS EKS ECR account
+  # tag: ""
+  pullPolicy: IfNotPresent # [DEFAULT]
+
+imagePullSecrets: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Naming Overrides
+# Purpose: Sets the name of the DaemonSet and related resources.
+# Importance: 'aws-node' is the standard name used by EKS for the VPC CNI.
+#             Maintaining this name ensures compatibility with:
+#             - EKS managed upgrades
+#             - AWS documentation and troubleshooting guides
+#             - Existing monitoring and alerting rules
+# -----------------------------------------------------------------------------
+nameOverride: aws-node # [DEFAULT]
+fullnameOverride: aws-node # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Service Account Configuration
+# Purpose: Configures the Service Account for VPC CNI pods.
+# Importance:
+#   - create: false - Uses the pre-existing 'aws-node' service account
+#     that EKS creates automatically with the required IAM permissions
+#   - The aws-node SA is pre-configured with IRSA for VPC CNI operations
+#   - Do NOT create a new SA as it would lack the required IAM bindings
+# Note: IRSA annotation is managed by EKS, not this Helm chart.
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true # [CUSTOM] Let Helm manage the SA
+  name: aws-node # [CUSTOM] Pre-existing service account
+  annotations:
+    eks.amazonaws.com/role-arn: "${role_arn}" # [CUSTOM] IRSA annotation
+
+# -----------------------------------------------------------------------------
+# CRD Configuration [DEFAULT]
+# Purpose: Creates Custom Resource Definitions for VPC CNI features.
+# Importance: Required for:
+#   - ENIConfig CRD: Custom networking configuration per availability zone
+#   - SecurityGroupPolicy CRD: Pod-level security group assignment
+#   - Must be true if using custom networking or security groups for pods
+# -----------------------------------------------------------------------------
+crd:
+  create: true # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Configuration
+# Purpose: Defines DaemonSet pod settings and selector behavior.
+# Importance:
+#   - originalMatchLabels: true - CRITICAL for EKS upgrade scenarios.
+#     When migrating from EKS-managed addon to Helm, this ensures the new
+#     DaemonSet adopts existing pods without disruption.
+#   - Without this, you may see "selector does not match" errors during
+#     the migration from EKS addon to Helm-managed VPC CNI.
+# -----------------------------------------------------------------------------
+originalMatchLabels: true # [CUSTOM] Required for EKS upgrade scenarios
+
+podLabels: {} # [DEFAULT]
+podAnnotations: {} # [DEFAULT]
+
+podSecurityContext: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Container Security Context
+# Purpose: Defines security settings for the VPC CNI container.
+# Importance: VPC CNI requires elevated privileges because it:
+#   - privileged: true - Required to configure iptables, routing tables,
+#     and network interfaces at the node level
+#   - NET_ADMIN: Allows network configuration operations
+#   - NET_RAW: Allows raw socket operations for network diagnostics
+# WARNING: These privileges are required - do not modify without testing.
+# -----------------------------------------------------------------------------
+securityContext:
+  privileged: true # [DEFAULT] Required for network config
+  capabilities:
+    add:
+      - NET_ADMIN # [DEFAULT]
+      - NET_RAW # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Priority Class [DEFAULT]
+# Purpose: Ensures VPC CNI pods have the highest scheduling priority.
+# Importance: CRITICAL - system-node-critical priority ensures:
+#   - VPC CNI runs before any other pods on the node
+#   - Networking is available for all other workloads
+#   - CNI cannot be evicted due to resource pressure
+# Note: system-node-critical is higher than system-cluster-critical.
+# -----------------------------------------------------------------------------
+priorityClassName: system-node-critical # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# DaemonSet Configuration [DEFAULT]
+# Purpose: Controls how the DaemonSet updates pods on each node.
+# Importance:
+#   - RollingUpdate: Updates nodes one at a time
+#   - maxUnavailable: 10% - Limits how many nodes can have VPC CNI down
+#     simultaneously during upgrades
+# WARNING: Setting maxUnavailable too high can cause cluster-wide network outage.
+# -----------------------------------------------------------------------------
+updateStrategy:
+  type: RollingUpdate # [DEFAULT]
+  rollingUpdate:
+    maxUnavailable: 10% # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Resource Limits [DEFAULT]
+# Purpose: Defines CPU and memory resources for VPC CNI.
+# Importance:
+#   - requests: Low (25m CPU, 64Mi memory) because CNI is mostly idle
+#   - limits: Higher to allow bursting during ENI attachment operations
+#   - VPC CNI is lightweight but critical - ensure resources are available
+# Note: For nodes with many pods, consider increasing memory limits.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 25m # [DEFAULT]
+    memory: 64Mi # [DEFAULT]
+  limits:
+    cpu: 100m # [DEFAULT]
+    memory: 128Mi # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Node Scheduling [DEFAULT]
+# Purpose: Controls where VPC CNI DaemonSet pods can run.
+# Importance:
+#   - tolerations: operator: Exists - Tolerates ALL taints because CNI
+#     must run on every node regardless of taints
+#   - nodeAffinity: Excludes Fargate nodes (no CNI needed) and ensures
+#     only Linux nodes are targeted (no Windows support)
+#   - VPC CNI must run on EVERY EC2 node for pod networking to work
+# -----------------------------------------------------------------------------
+nodeSelector: {} # [DEFAULT]
+tolerations:
+  - operator: Exists # [DEFAULT] Tolerate all taints
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/os # [DEFAULT]
+              operator: In
+              values:
+                - linux
+            - key: eks.amazonaws.com/compute-type # [DEFAULT]
+              operator: NotIn
+              values:
+                - fargate
+
+# -----------------------------------------------------------------------------
+# CNI Environment Variables
+# Purpose: Configures VPC CNI behavior through environment variables.
+# Importance: These settings control IP address management and networking.
+#
+# IP ADDRESS MANAGEMENT:
+#   - ENABLE_PREFIX_DELEGATION: true - CRITICAL for IP efficiency!
+#     * Enables /28 prefix delegation (16 IPs per prefix) instead of
+#       individual secondary IPs
+#     * Dramatically increases pod density per node
+#     * Example: m5.large without prefix: ~29 pods, with prefix: ~110 pods
+#   - WARM_PREFIX_TARGET: 1 - Number of /28 prefixes to keep warm
+#     * Higher values = faster pod scheduling but more IP consumption
+#   - WARM_IP_TARGET: 1 - Minimum warm IPs to maintain
+#   - MINIMUM_IP_TARGET: 1 - Minimum IPs to allocate initially
+#
+# NETWORKING:
+#   - AWS_VPC_K8S_CNI_LOGLEVEL: DEBUG - Logging level for troubleshooting
+#   - AWS_VPC_K8S_CNI_VETHPREFIX: eni - Prefix for veth interfaces
+#   - AWS_VPC_ENI_MTU: 9001 - Jumbo frames for better throughput in VPC
+#
+# SNAT CONFIGURATION:
+#   - AWS_VPC_K8S_CNI_EXTERNALSNAT: false - Uses AWS NAT Gateway for
+#     external traffic instead of node SNAT. Set to true if not using NAT GW.
+#
+# CUSTOM NETWORKING:
+#   - AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG: false - When true, uses ENIConfig
+#     CRDs to place pod ENIs in different subnets than the node
+#   - ENI_CONFIG_LABEL_DEF: Node label used to select ENIConfig
+#
+# NETWORK POLICY:
+#   - ENABLE_NETWORK_POLICY: false - Native VPC CNI network policy support
+#     (alternative to Calico). Requires VPC CNI 1.14+
+#
+# IP VERSION:
+#   - ENABLE_IPV4/IPV6: Controls IP stack. IPv6 requires VPC and subnet
+#     configuration for dual-stack or IPv6-only clusters.
+# -----------------------------------------------------------------------------
+env:
+  # IP Address Management
+  ENABLE_PREFIX_DELEGATION: "true" # [CUSTOM] Enable /28 prefix per ENI
+  WARM_PREFIX_TARGET: "1" # [CUSTOM] Number of warm prefixes
+  WARM_IP_TARGET: "1" # [DEFAULT]
+  MINIMUM_IP_TARGET: "1" # [DEFAULT]
+
+  # Networking Configuration
+  AWS_VPC_K8S_CNI_LOGLEVEL: DEBUG # [DEFAULT]
+  AWS_VPC_K8S_CNI_VETHPREFIX: eni # [DEFAULT]
+  AWS_VPC_ENI_MTU: "9001" # [DEFAULT] Jumbo frames
+
+  # External SNAT Configuration
+  AWS_VPC_K8S_CNI_EXTERNALSNAT: "false" # [DEFAULT]
+
+  # Custom Networking (for ENIConfig)
+  AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG: "false" # [DEFAULT]
+  ENI_CONFIG_LABEL_DEF: topology.kubernetes.io/zone # [DEFAULT]
+
+  # Network Policy Support
+  ENABLE_NETWORK_POLICY: "false" # [DEFAULT]
+
+  # IPv6 Configuration
+  ENABLE_IPV4: "true" # [DEFAULT]
+  ENABLE_IPV6: "false" # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# ENIConfig Custom Networking [DEFAULT]
+# Purpose: Creates ENIConfig resources for custom networking setups.
+# Importance: Used when:
+#   - Pod IPs need to come from different subnets than node IPs
+#   - You want to use secondary CIDR ranges for pods
+#   - VPC CIDR is exhausted and you need more pod IP space
+# How it works: Each ENIConfig maps to an AZ and specifies which subnet
+# and security groups to use for pod ENIs in that zone.
+# -----------------------------------------------------------------------------
+eniConfig:
+  create: false # [DEFAULT]
+  region: us-west-2 # [DEFAULT]
+  subnets: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Health Probes Configuration [DEFAULT]
+# Purpose: Configures health checks for VPC CNI containers.
+# Importance:
+#   - livenessProbe: Uses gRPC health check on port 50051
+#     * initialDelaySeconds: 60 - Allows time for ENI setup
+#     * Restarts the pod if CNI becomes unresponsive
+#   - readinessProbe: Indicates when CNI is ready to configure pods
+#     * initialDelaySeconds: 1 - Quick readiness check
+#   - Both use the grpc-health-probe binary for reliable health checking
+# -----------------------------------------------------------------------------
+livenessProbe:
+  exec:
+    command:
+      - /app/grpc-health-probe
+      - -addr=:50051
+      - -connect-timeout=5s
+      - -rpc-timeout=5s # [DEFAULT]
+  initialDelaySeconds: 60 # [DEFAULT]
+  timeoutSeconds: 10 # [DEFAULT]
+
+readinessProbe:
+  exec:
+    command:
+      - /app/grpc-health-probe
+      - -addr=:50051
+      - -connect-timeout=5s
+      - -rpc-timeout=5s # [DEFAULT]
+  initialDelaySeconds: 1 # [DEFAULT]
+  timeoutSeconds: 10 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Additional Volumes [DEFAULT]
+# Purpose: Injection points for custom volumes and mounts.
+# Importance: VPC CNI already mounts required host paths internally.
+#             Use these only for advanced configurations like:
+#             - Custom CNI plugins
+#             - Additional certificates
+# -----------------------------------------------------------------------------
+extraVolumes: [] # [DEFAULT]
+extraVolumeMounts: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Metrics/Monitoring [DEFAULT]
+# Purpose: Integrates with Prometheus for CNI metrics collection.
+# Importance: When enabled, exposes metrics like:
+#   - awscni_add_ip_req_count, awscni_del_ip_req_count
+#   - awscni_eni_allocated, awscni_ip_max
+#   - Essential for monitoring IP utilization and ENI health
+# Note: Requires Prometheus Operator for ServiceMonitor support.
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false # [DEFAULT]

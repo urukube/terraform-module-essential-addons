@@ -1,0 +1,257 @@
+# =============================================================================
+# Metrics Server Helm Chart Values
+# Chart: https://github.com/kubernetes-sigs/metrics-server/tree/master/charts/metrics-server
+# =============================================================================
+# Legend:
+#   [CUSTOM]  - Values modified from chart defaults for this module
+#   [DEFAULT] - Chart default values (included for reference)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Image Configuration [DEFAULT]
+# Purpose: Defines the container image for Metrics Server.
+# Importance: Uses the official Kubernetes SIG image from the K8s registry.
+#             Metrics Server provides the core metrics API for HPA and VPA.
+# -----------------------------------------------------------------------------
+image:
+  repository: registry.k8s.io/metrics-server/metrics-server  # [DEFAULT]
+  # tag: ""                                                  # [DEFAULT] Uses appVersion
+  pullPolicy: IfNotPresent                                   # [DEFAULT]
+
+imagePullSecrets: []                                         # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Naming Overrides [DEFAULT]
+# Purpose: Allows customization of Kubernetes resource names.
+# Importance: Useful for multi-tenant clusters or naming conflict resolution.
+# -----------------------------------------------------------------------------
+nameOverride: ""                                             # [DEFAULT]
+fullnameOverride: ""                                         # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Deployment Configuration
+# Purpose: Controls the number of Metrics Server replicas.
+# Importance:
+#   - replicas: 2 - Provides HA for the metrics API
+#   - If Metrics Server is unavailable, HPA/VPA cannot get pod metrics
+#     and autoscaling will fail
+#   - kubectl top nodes/pods will also fail without Metrics Server
+# -----------------------------------------------------------------------------
+replicas: 2                                                  # [CUSTOM] Default is 1
+
+# -----------------------------------------------------------------------------
+# Service Account Configuration
+# Purpose: Creates the Kubernetes Service Account for Metrics Server.
+# Importance: Metrics Server needs K8s API access to:
+#   - Query kubelets for pod and node resource metrics
+#   - Register itself as an API server (metrics.k8s.io)
+# Note: Does not require AWS IAM access (no IRSA needed).
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true                                               # [DEFAULT]
+  annotations: {}                                            # [DEFAULT]
+  name: metrics-server                                       # [CUSTOM] Default is auto-generated
+  secrets: []                                                # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# RBAC Configuration [DEFAULT]
+# Purpose: Creates ClusterRole and ClusterRoleBinding for API access.
+# Importance: Metrics Server needs cluster-wide permissions to:
+#   - Read pods and nodes from all namespaces
+#   - Access kubelet /metrics/resource endpoint on every node
+#   - Register as an aggregated API server
+# -----------------------------------------------------------------------------
+rbac:
+  create: true                                               # [DEFAULT]
+  pspEnabled: false                                          # [DEFAULT] PSP deprecated in K8s 1.25+
+
+# -----------------------------------------------------------------------------
+# API Service Configuration [DEFAULT]
+# Purpose: Registers Metrics Server as an aggregated API server.
+# Importance: CRITICAL for metrics API to work:
+#   - create: true - Creates the APIService resource for metrics.k8s.io
+#   - insecureSkipTLSVerify: true - Skips TLS verification when the API
+#     server proxies requests to Metrics Server (common in EKS)
+#   - This allows `kubectl top` and HPA to query metrics via the K8s API
+# -----------------------------------------------------------------------------
+apiService:
+  create: true                                               # [DEFAULT]
+  insecureSkipTLSVerify: true                                # [DEFAULT]
+  caBundle: ""                                               # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Configuration [DEFAULT]
+# Purpose: Defines network and update settings for Metrics Server pods.
+# Importance:
+#   - hostNetwork: false - Runs in pod network (not host network)
+#   - containerPort: 10250 - Port for the metrics server HTTPS endpoint
+#   - updateStrategy: RollingUpdate with maxUnavailable: 1 ensures at least
+#     one replica is always available during upgrades
+# -----------------------------------------------------------------------------
+hostNetwork:
+  enabled: false                                             # [DEFAULT]
+
+containerPort: 10250                                         # [DEFAULT]
+
+updateStrategy:
+  type: RollingUpdate                                        # [DEFAULT]
+  rollingUpdate:
+    maxSurge: 0                                              # [DEFAULT]
+    maxUnavailable: 1                                        # [DEFAULT]
+
+podLabels: {}                                                # [DEFAULT]
+podAnnotations: {}                                           # [DEFAULT]
+
+podSecurityContext: {}                                       # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Container Security Context [DEFAULT]
+# Purpose: Applies fine-grained security controls at the container level.
+# Importance: Implements principle of least privilege:
+#   - allowPrivilegeEscalation: false - No privilege escalation
+#   - readOnlyRootFilesystem: true - Immutable container filesystem
+#   - runAsNonRoot: true - Must run as non-root user
+#   - runAsUser: 1000 - Explicit non-root UID
+#   - seccompProfile: RuntimeDefault - Uses container runtime's seccomp profile
+#   - drop ALL capabilities - Least privilege principle
+# -----------------------------------------------------------------------------
+securityContext:
+  allowPrivilegeEscalation: false                            # [DEFAULT]
+  readOnlyRootFilesystem: true                               # [DEFAULT]
+  runAsNonRoot: true                                         # [DEFAULT]
+  runAsUser: 1000                                            # [DEFAULT]
+  seccompProfile:
+    type: RuntimeDefault                                     # [DEFAULT]
+  capabilities:
+    drop:
+      - ALL                                                  # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Priority Class [DEFAULT]
+# Purpose: Ensures Metrics Server pods are scheduled with high priority.
+# Importance: CRITICAL - system-cluster-critical priority ensures:
+#   - Metrics collection continues during resource pressure
+#   - HPA/VPA always have access to current pod metrics
+#   - kubectl top commands remain functional
+# -----------------------------------------------------------------------------
+priorityClassName: system-cluster-critical                   # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Resource Limits
+# Purpose: Defines CPU and memory resources for Metrics Server.
+# Importance:
+#   - requests: Guaranteed minimum for stable metrics collection
+#   - limits: Prevents memory issues from affecting the node
+#   - Equal requests/limits: Creates "Guaranteed" QoS class
+# Note: For large clusters (500+ nodes), consider increasing memory.
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m                                                # [CUSTOM] Default is lower
+    memory: 200Mi                                            # [CUSTOM] Default is lower
+  limits:
+    cpu: 100m                                                # [CUSTOM]
+    memory: 200Mi                                            # [CUSTOM]
+
+# -----------------------------------------------------------------------------
+# Node Scheduling [DEFAULT]
+# Purpose: Controls where Metrics Server pods can be scheduled.
+# Importance: In production, consider:
+#   - topologySpreadConstraints: Spread replicas across AZs for HA
+#   - affinity: Use pod anti-affinity to avoid both replicas on same node
+#   - nodeSelector: Place on dedicated system node pools
+# -----------------------------------------------------------------------------
+nodeSelector: {}                                             # [DEFAULT]
+tolerations: []                                              # [DEFAULT]
+affinity: {}                                                 # [DEFAULT]
+topologySpreadConstraints: []                                # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Probes Configuration [DEFAULT]
+# Purpose: Configures health checks for Metrics Server.
+# Importance:
+#   - livenessProbe (/livez on HTTPS port): Restarts if server hangs
+#   - readinessProbe (/readyz on HTTPS port): Removes from service if not ready
+#   - readinessProbe initialDelaySeconds: 20 - Allows time for metrics cache
+#     to be populated before serving requests
+# -----------------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /livez                                             # [DEFAULT]
+    port: https                                              # [DEFAULT]
+    scheme: HTTPS                                            # [DEFAULT]
+  initialDelaySeconds: 0                                     # [DEFAULT]
+  periodSeconds: 10                                          # [DEFAULT]
+  failureThreshold: 3                                        # [DEFAULT]
+
+readinessProbe:
+  httpGet:
+    path: /readyz                                            # [DEFAULT]
+    port: https                                              # [DEFAULT]
+    scheme: HTTPS                                            # [DEFAULT]
+  initialDelaySeconds: 20                                    # [DEFAULT]
+  periodSeconds: 10                                          # [DEFAULT]
+  failureThreshold: 3                                        # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Service Configuration [DEFAULT]
+# Purpose: Creates a Kubernetes Service for Metrics Server.
+# Importance:
+#   - type: ClusterIP - Internal service for API server to reach
+#   - port: 443 - Standard HTTPS port for API access
+#   - This service is referenced by the APIService resource
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP                                            # [DEFAULT]
+  port: 443                                                  # [DEFAULT]
+  annotations: {}                                            # [DEFAULT]
+  labels: {}                                                 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Metrics Server Arguments
+# Purpose: Configures Metrics Server behavior via CLI arguments.
+# Importance: CRITICAL for EKS compatibility:
+#   - --kubelet-preferred-address-types=InternalIP:
+#     * Forces Metrics Server to use node internal IPs to contact kubelets
+#     * Essential for EKS where node hostnames may not be resolvable
+#   - --kubelet-use-node-status-port:
+#     * Uses the kubelet's status port (typically 10250) from node status
+#     * Ensures correct port even if kubelet config varies
+#   - --metric-resolution=15s:
+#     * How often metrics are collected from kubelets
+#     * 15s is the default, balances freshness with kubelet load
+#     * Minimum 10s, for HPA use cases 15-30s is recommended
+# -----------------------------------------------------------------------------
+args:
+  - --kubelet-preferred-address-types=InternalIP             # [CUSTOM] Use internal IPs for EKS
+  - --kubelet-use-node-status-port                           # [CUSTOM] Use status port
+  - --metric-resolution=15s                                  # [CUSTOM] 15 second resolution
+
+# -----------------------------------------------------------------------------
+# Additional Volumes [DEFAULT]
+# Purpose: Injection points for custom volumes and mounts.
+# Importance: Useful for:
+#   - Mounting custom CA certificates if using custom kubelet TLS
+#   - Adding configuration files for advanced setups
+# -----------------------------------------------------------------------------
+extraVolumes: []                                             # [DEFAULT]
+extraVolumeMounts: []                                        # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Metrics/Monitoring [DEFAULT]
+# Purpose: Exposes Metrics Server's own operational metrics.
+# Importance: When enabled:
+#   - metrics.enabled: Exposes metrics about Metrics Server itself
+#     (not the pod/node metrics it collects)
+#   - serviceMonitor: Auto-configures Prometheus to scrape these metrics
+#   - Useful for monitoring Metrics Server health and performance
+# Note: Different from the pod/node metrics exposed via metrics.k8s.io API.
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: false                                             # [DEFAULT]
+
+serviceMonitor:
+  enabled: false                                             # [DEFAULT]
+  additionalLabels: {}                                       # [DEFAULT]
+  interval: 1m                                               # [DEFAULT]
+  scrapeTimeout: 10s                                         # [DEFAULT]

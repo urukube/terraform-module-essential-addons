@@ -1,0 +1,336 @@
+# =============================================================================
+# CoreDNS Helm Chart Values
+# Chart: https://github.com/coredns/helm
+# =============================================================================
+# Legend:
+#   [CUSTOM]  - Values modified from chart defaults for this module
+#   [DEFAULT] - Chart default values (included for reference)
+#   $${var}    - Terraform templatefile variables
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Image Configuration [DEFAULT]
+# Purpose: Defines the container image for CoreDNS.
+# Importance: Uses the official CoreDNS image from Docker Hub. CoreDNS is
+#             the CNCF-graduated project that provides DNS services for K8s.
+# -----------------------------------------------------------------------------
+image:
+  repository: coredns/coredns # [DEFAULT]
+  # tag: ""                                                   # [DEFAULT] Uses appVersion
+  pullPolicy: IfNotPresent # [DEFAULT]
+
+imagePullSecrets: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Deployment Configuration
+# Purpose: Controls the number of CoreDNS replicas and deployment settings.
+# Importance:
+#   - replicaCount: 2 - CRITICAL for HA. DNS is essential for all cluster
+#     communication. If DNS fails, pods cannot resolve service names.
+#   - deployment.name: 'coredns' matches EKS default for compatibility
+#     during migrations or upgrades.
+# -----------------------------------------------------------------------------
+replicaCount: 2 # [CUSTOM] HA mode (default is 1)
+
+# Deployment name override
+deployment:
+  name: coredns # [CUSTOM] Match EKS default name
+  annotations: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Service Account Configuration
+# Purpose: Creates the Kubernetes Service Account for CoreDNS.
+# Importance: CoreDNS needs K8s API access to:
+#   - Watch Services and Endpoints for DNS record updates
+#   - Read Pod information for PTR record resolution
+# Note: CoreDNS does not need AWS IAM access (no IRSA required).
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true # [DEFAULT]
+  name: coredns # [CUSTOM]
+  annotations: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# RBAC Configuration [DEFAULT]
+# Purpose: Creates ClusterRole and ClusterRoleBinding for K8s API access.
+# Importance: CoreDNS needs cluster-wide read access to:
+#   - Services: To resolve service.namespace.svc.cluster.local
+#   - Endpoints: To return pod IPs for headless services
+#   - Namespaces: For namespace-aware DNS resolution
+# -----------------------------------------------------------------------------
+rbac:
+  create: true # [DEFAULT]
+  pspEnable: false # [DEFAULT] PSP deprecated in K8s 1.25+
+
+# -----------------------------------------------------------------------------
+# Service Configuration
+# Purpose: Exposes CoreDNS as the cluster DNS service.
+# Importance: CRITICAL settings:
+#   - isClusterService: true - Marks this as the cluster DNS provider
+#   - service.name: 'kube-dns' - The standard K8s DNS service name that
+#     all pods use (configured in kubelet --cluster-dns flag)
+#   - clusterIP: Must match the DNS IP configured in kubelet. EKS typically
+#     uses the 10th IP in the service CIDR (e.g., 10.100.0.10 for 10.100.0.0/16)
+#   - servicePort: 53 - Standard DNS port
+# -----------------------------------------------------------------------------
+isClusterService: true # [DEFAULT] Acts as cluster DNS
+serviceType: ClusterIP # [DEFAULT]
+servicePort: 53 # [DEFAULT]
+serviceProtocol: UDP # [DEFAULT]
+
+service:
+  name: kube-dns # [DEFAULT] Standard K8s DNS service name
+  clusterIP: ${cluster_dns_ip} # [CUSTOM] Calculated from service CIDR
+  annotations: {} # [DEFAULT]
+
+# Additional service for TCP DNS
+# Purpose: Some DNS queries require TCP (large responses, zone transfers).
+serviceTcp:
+  enabled: true # [DEFAULT]
+  annotations: {} # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Configuration [DEFAULT]
+# Purpose: Defines metadata and security settings for CoreDNS pods.
+# Importance: Security context settings:
+#   - allowPrivilegeEscalation: false - Standard security practice
+#   - readOnlyRootFilesystem: true - Immutable container
+#   - NET_BIND_SERVICE capability: REQUIRED - Allows binding to port 53
+#     (privileged port < 1024) without running as root
+#   - drop ALL: Removes all other capabilities for least privilege
+# -----------------------------------------------------------------------------
+podLabels: {} # [DEFAULT]
+podAnnotations: {} # [DEFAULT]
+
+podSecurityContext: {} # [DEFAULT]
+
+securityContext:
+  allowPrivilegeEscalation: false # [DEFAULT]
+  readOnlyRootFilesystem: true # [DEFAULT]
+  capabilities:
+    add:
+      - NET_BIND_SERVICE # [DEFAULT] Allow binding to port 53
+    drop:
+      - ALL # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Priority Class [DEFAULT]
+# Purpose: Ensures CoreDNS pods are scheduled with highest priority.
+# Importance: CRITICAL - system-cluster-critical priority ensures:
+#   - DNS service survives resource pressure and evictions
+#   - DNS is always available for pod-to-pod communication
+#   - Cluster cannot function without DNS, so this must be protected
+# -----------------------------------------------------------------------------
+priorityClassName: system-cluster-critical # [DEFAULT]
+
+terminationGracePeriodSeconds: 30 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Resource Limits
+# Purpose: Defines CPU and memory resources for CoreDNS.
+# Importance:
+#   - requests: Guaranteed minimum resources for stable DNS resolution
+#   - limits: Prevents memory leaks from affecting the node
+#   - These values are tuned for typical EKS workloads
+# Note: For high-traffic clusters, increase memory limits and enable HPA.
+# -----------------------------------------------------------------------------
+resources:
+  limits:
+    cpu: 100m # [CUSTOM] (default is higher)
+    memory: 128Mi # [CUSTOM]
+  requests:
+    cpu: 100m # [CUSTOM]
+    memory: 70Mi # [CUSTOM]
+
+# -----------------------------------------------------------------------------
+# Node Scheduling [DEFAULT]
+# Purpose: Controls where CoreDNS pods can be scheduled.
+# Importance:
+#   - tolerations: Allow CoreDNS to run on control-plane nodes and nodes
+#     with CriticalAddonsOnly taint. Essential for DNS availability.
+#   - In production, consider topologySpreadConstraints to ensure DNS
+#     pods are spread across availability zones.
+# -----------------------------------------------------------------------------
+nodeSelector: {} # [DEFAULT]
+tolerations:
+  - key: CriticalAddonsOnly # [DEFAULT]
+    operator: Exists
+  - effect: NoSchedule # [DEFAULT]
+    key: node-role.kubernetes.io/control-plane
+affinity: {} # [DEFAULT]
+topologySpreadConstraints: [] # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Probes Configuration [DEFAULT]
+# Purpose: Configures health checks for CoreDNS.
+# Importance:
+#   - livenessProbe (/health on port 8080): Restarts pod if CoreDNS hangs
+#   - readinessProbe (/ready on port 8181): Removes from kube-dns Service
+#     endpoints if not ready, preventing DNS queries to unhealthy pods
+#   - Different ports allow independent health vs readiness checks
+# -----------------------------------------------------------------------------
+livenessProbe:
+  enabled: true # [DEFAULT]
+  httpGet:
+    path: /health # [DEFAULT]
+    port: 8080 # [DEFAULT]
+    scheme: HTTP # [DEFAULT]
+  initialDelaySeconds: 60 # [DEFAULT]
+  periodSeconds: 10 # [DEFAULT]
+  timeoutSeconds: 5 # [DEFAULT]
+  failureThreshold: 5 # [DEFAULT]
+  successThreshold: 1 # [DEFAULT]
+
+readinessProbe:
+  enabled: true # [DEFAULT]
+  httpGet:
+    path: /ready # [DEFAULT]
+    port: 8181 # [DEFAULT]
+    scheme: HTTP # [DEFAULT]
+  initialDelaySeconds: 30 # [DEFAULT]
+  periodSeconds: 10 # [DEFAULT]
+  timeoutSeconds: 5 # [DEFAULT]
+  failureThreshold: 5 # [DEFAULT]
+  successThreshold: 1 # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# HPA Configuration [DEFAULT]
+# Purpose: Enables Horizontal Pod Autoscaling for CoreDNS.
+# Importance: For high-traffic clusters:
+#   - enabled: true - Auto-scales based on CPU/memory utilization
+#   - Ensures DNS capacity grows with cluster load
+#   - Recommended for clusters with > 100 pods or high DNS query rates
+# Note: Requires Metrics Server to be installed.
+# -----------------------------------------------------------------------------
+autoscaling:
+  enabled: false # [DEFAULT]
+  minReplicas: 1 # [DEFAULT]
+  maxReplicas: 5 # [DEFAULT]
+  targetCPU: 80 # [DEFAULT]
+  targetMemory: "" # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Pod Disruption Budget [DEFAULT]
+# Purpose: Limits voluntary disruptions during cluster maintenance.
+# Importance: For production DNS HA:
+#   - enabled: true - Prevents evicting too many DNS pods at once
+#   - minAvailable: 1 - Ensures at least one CoreDNS pod is always running
+#   - Protects against DNS outages during node drains/upgrades
+# Recommendation: Enable for production clusters.
+# -----------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: false # [DEFAULT]
+  minAvailable: 1 # [DEFAULT]
+  # maxUnavailable: 1                                         # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# CoreDNS Server Configuration
+# Purpose: Defines the Corefile - the main configuration for CoreDNS plugins.
+# Importance: CRITICAL - This defines how DNS queries are processed.
+#
+# Plugin Pipeline (order matters):
+#   1. errors - Logs DNS errors for debugging
+#   2. health - Exposes /health endpoint for liveness probe
+#   3. ready - Exposes /ready endpoint for readiness probe
+#   4. kubernetes - Resolves cluster DNS (*.cluster.local)
+#   5. prometheus - Exposes metrics on port 9153
+#   6. forward - Forwards external queries to upstream DNS
+#   7. cache - Caches DNS responses for performance
+#   8. loop - Detects and breaks infinite DNS loops
+#   9. reload - Hot-reloads Corefile changes without restart
+#   10. loadbalance - Round-robins DNS responses for load distribution
+# -----------------------------------------------------------------------------
+servers:
+  - zones:
+      - zone: . # [DEFAULT] Root zone
+    port: 53 # [DEFAULT]
+    plugins:
+      # Error logging - Logs DNS errors to stdout for debugging
+      - name: errors # [DEFAULT]
+
+      # Health check endpoint - Responds on /health:8080
+      # lameduck: Delays shutdown by 5s to allow in-flight requests to complete
+      - name: health # [DEFAULT]
+        configBlock: lameduck 5s # [CUSTOM]
+
+      # Readiness endpoint - Responds on /ready:8181
+      - name: ready # [DEFAULT]
+
+      # Kubernetes cluster DNS resolution
+      # Purpose: Resolves service.namespace.svc.cluster.local names
+      # - cluster.local: The default cluster domain
+      # - in-addr.arpa/ip6.arpa: Reverse DNS lookups
+      # - pods insecure: Allows pod DNS (pod-ip-addr.namespace.pod.cluster.local)
+      # - fallthrough: Passes unresolved queries to next plugin
+      # - ttl 30: DNS responses valid for 30 seconds
+      - name: kubernetes # [DEFAULT]
+        parameters: cluster.local in-addr.arpa ip6.arpa # [DEFAULT]
+        configBlock: |-
+          pods insecure
+          fallthrough in-addr.arpa ip6.arpa
+          ttl 30
+
+      # Prometheus metrics endpoint on port 9153
+      - name: prometheus # [DEFAULT]
+        parameters: 0.0.0.0:9153 # [DEFAULT]
+
+      # Forward external queries to upstream DNS
+      # Uses the node's /etc/resolv.conf (typically VPC DNS in AWS)
+      - name: forward # [DEFAULT]
+        parameters: . /etc/resolv.conf # [DEFAULT]
+
+      # DNS response caching
+      # Purpose: Reduces latency and upstream DNS load
+      # TTL of 30 seconds - balance between freshness and performance
+      - name: cache # [DEFAULT]
+        parameters: 30 # [CUSTOM] Cache TTL in seconds
+
+      # Detect and break DNS loops
+      # Purpose: Prevents infinite forwarding loops that could crash CoreDNS
+      - name: loop # [DEFAULT]
+
+      # Hot reload Corefile changes
+      # Purpose: Allows updating DNS config without pod restart
+      - name: reload # [DEFAULT]
+
+      # Round-robin DNS load balancing
+      # Purpose: Randomizes A/AAAA record order for client-side load distribution
+      - name: loadbalance # [DEFAULT]
+
+# -----------------------------------------------------------------------------
+# Additional Configuration [DEFAULT]
+# Purpose: Injection points for custom configuration and volumes.
+# Importance:
+#   - extraConfig: Add custom Corefile blocks (e.g., custom zones, plugins)
+#   - extraVolumes: Mount additional config files or secrets
+#   - zoneFiles: Define custom DNS zone files for internal domains
+# -----------------------------------------------------------------------------
+extraConfig: {} # [DEFAULT] Additional Corefile config
+
+extraVolumes: [] # [DEFAULT]
+extraVolumeMounts: [] # [DEFAULT]
+extraSecrets: [] # [DEFAULT]
+
+zoneFiles: [] # [DEFAULT] Custom zone files
+
+# -----------------------------------------------------------------------------
+# Prometheus/Monitoring [DEFAULT]
+# Purpose: Integrates with Prometheus for DNS metrics collection.
+# Importance: When enabled:
+#   - Exposes metrics like coredns_dns_requests_total, coredns_dns_response_size
+#   - Essential for monitoring DNS performance and error rates
+#   - Helps identify DNS resolution issues and cache hit rates
+# Note: Requires Prometheus Operator if using serviceMonitor.
+# -----------------------------------------------------------------------------
+prometheus:
+  service:
+    enabled: false # [DEFAULT]
+    annotations:
+      prometheus.io/scrape: "true" # [DEFAULT]
+      prometheus.io/port: "9153" # [DEFAULT]
+
+  monitor:
+    enabled: false # [DEFAULT]
+    additionalLabels: {} # [DEFAULT]
+    namespace: "" # [DEFAULT]
+    interval: "" # [DEFAULT]
